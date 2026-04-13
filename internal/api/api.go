@@ -450,44 +450,15 @@ func trimPath(r *http.Request, prefix string) string {
 }
 
 // resolveModulePath determines the correct module path for a given package path and version.
-// If the module path is not provided, it searches through potential candidate module paths
-// derived from the package path. If multiple valid modules contain the package, it returns
-// a list of candidates to help the user disambiguate the request.
+// If the module path is not provided, it uses internal.UnknownModulePath to let the
+// data source resolve the module, which may pick the longest matching module path.
 func resolveModulePath(r *http.Request, ds internal.DataSource, pkgPath, modulePath, requestedVersion string) (*internal.UnitMeta, error) {
 	if requestedVersion == "" {
 		requestedVersion = version.Latest
 	}
 	if modulePath == "" {
-		// Handle potential ambiguity if module is not specified.
-		candidates := internal.CandidateModulePaths(pkgPath)
-		var validCandidates []Candidate
-		var foundUM *internal.UnitMeta
-		for _, mp := range candidates {
-			// Check if this module actually exists and contains the package at the requested version.
-			if m, err := ds.GetUnitMeta(r.Context(), pkgPath, mp, requestedVersion); err == nil {
-				foundUM = m
-				validCandidates = append(validCandidates, Candidate{
-					ModulePath:  mp,
-					PackagePath: pkgPath,
-				})
-			} else if !errors.Is(err, derrors.NotFound) {
-				return nil, err
-			}
-		}
-
-		if len(validCandidates) > 1 {
-			return nil, &Error{
-				Code:       http.StatusBadRequest,
-				Message:    "ambiguous package path",
-				Candidates: validCandidates,
-			}
-		}
-		if len(validCandidates) == 0 {
-			return nil, derrors.NotFound
-		}
-		return foundUM, nil
+		modulePath = internal.UnknownModulePath
 	}
-
 	um, err := ds.GetUnitMeta(r.Context(), pkgPath, modulePath, requestedVersion)
 	if err != nil {
 		return nil, err

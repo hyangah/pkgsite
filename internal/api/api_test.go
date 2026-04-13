@@ -157,16 +157,17 @@ func TestServePackage(t *testing.T) {
 			},
 		},
 		{
-			name:       "ambiguous path",
+			name:       "ambiguous path resolves to longest module",
 			url:        "/v1/package/example.com/a/b?version=v1.2.3",
-			wantStatus: http.StatusBadRequest,
-			want: &Error{
-				Code:    http.StatusBadRequest,
-				Message: "ambiguous package path",
-				Candidates: []Candidate{
-					{ModulePath: "example.com/a/b", PackagePath: "example.com/a/b"},
-					{ModulePath: "example.com/a", PackagePath: "example.com/a/b"},
-				},
+			wantStatus: http.StatusOK,
+			want: &Package{
+				Path:          pkgPath,
+				ModulePath:    modulePath2, // longest match: example.com/a/b
+				ModuleVersion: version,
+				Synopsis:      "Synopsis for " + modulePath2,
+				IsLatest:      true,
+				GOOS:          "linux",
+				GOARCH:        "amd64",
 			},
 		},
 		{
