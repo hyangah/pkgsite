@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -250,6 +251,34 @@ func TestGetPackages(t *testing.T) {
 	}
 	if resp.Items[0].Path != "golang.org/x/text/language" {
 		t.Errorf("Path = %q, want golang.org/x/text/language", resp.Items[0].Path)
+	}
+}
+
+func TestAmbiguousPackagePath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(apiError{
+			Code:    400,
+			Message: "ambiguous package path",
+			Candidates: []candidate{
+				{ModulePath: "github.com/foo/bar", PackagePath: "github.com/foo/bar/pkg"},
+				{ModulePath: "github.com/foo/bar/pkg", PackagePath: "github.com/foo/bar/pkg"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.URL)
+	_, err := c.getPackage("github.com/foo/bar/pkg", "", &packageFlags{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "--module=github.com/foo/bar") {
+		t.Errorf("error missing candidate, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "--module=github.com/foo/bar/pkg") {
+		t.Errorf("error missing candidate, got:\n%s", msg)
 	}
 }
 

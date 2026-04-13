@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // A client fetches data from the pkg.go.dev v1 API.
@@ -28,11 +29,25 @@ func newClient(server string) *client {
 
 // apiError is the error format returned by the v1 API.
 type apiError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code       int         `json:"code"`
+	Message    string      `json:"message"`
+	Candidates []candidate `json:"candidates,omitempty"`
+}
+
+type candidate struct {
+	ModulePath  string `json:"modulePath"`
+	PackagePath string `json:"packagePath"`
 }
 
 func (e *apiError) Error() string {
+	if len(e.Candidates) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s; specify --module flag:\n", e.Message)
+		for _, c := range e.Candidates {
+			fmt.Fprintf(&b, "  --module=%s\n", c.ModulePath)
+		}
+		return b.String()
+	}
 	return fmt.Sprintf("%s (HTTP %d)", e.Message, e.Code)
 }
 

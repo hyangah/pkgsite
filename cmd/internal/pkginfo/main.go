@@ -7,9 +7,9 @@
 //
 // Usage:
 //
-//	pkginfo [flags] <package>[@version]       package information
-//	pkginfo module [flags] <module>[@version]  module information
-//	pkginfo search [flags] <query>             search for packages
+//	pkginfo [package] <package>[@version] [flags]  package information (default)
+//	pkginfo module <module>[@version] [flags]      module information
+//	pkginfo search <query> [flags]                 search for packages
 //
 // See doc/pkginfo.md for the full design document.
 package main
@@ -44,13 +44,16 @@ func commands() []*command {
 	searchFS := flag.NewFlagSet("pkginfo search", flag.ContinueOnError)
 	sf.register(searchFS)
 
-	return []*command{
+	pkgRun := func(fs *flag.FlagSet, stdout, stderr io.Writer) int { return runPackage(fs, &pf, stdout, stderr) }
+
+	var cmds []*command
+	cmds = []*command{
 		{
-			name:    "",
+			name:    "package",
 			args:    "<package>[@version]",
 			summary: "package information",
 			flags:   pkgFS,
-			run:     func(fs *flag.FlagSet, stdout, stderr io.Writer) int { return runPackage(fs, &pf, stdout, stderr) },
+			run:     pkgRun,
 		},
 		{
 			name:    "module",
@@ -66,7 +69,18 @@ func commands() []*command {
 			flags:   searchFS,
 			run:     func(fs *flag.FlagSet, stdout, stderr io.Writer) int { return runSearch(fs, &sf, stdout, stderr) },
 		},
+		{
+			name:    "help",
+			summary: "show this help message",
+			run:     func(_ *flag.FlagSet, stdout, _ io.Writer) int { printUsage(stdout, cmds); return 0 },
+		},
+		{
+			name:    "version",
+			summary: "print version information",
+			run:     func(_ *flag.FlagSet, stdout, _ io.Writer) int { fmt.Fprintln(stdout, versionInfo()); return 0 },
+		},
 	}
+	return cmds
 }
 
 // splitPathVersion splits "path@version" into its components.

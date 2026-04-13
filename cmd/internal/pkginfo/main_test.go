@@ -68,17 +68,25 @@ func TestRunPackage(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// Flags before arg.
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--server=" + srv.URL, "encoding/json"}, &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+		t.Fatalf("flags before: exit code = %d, stderr = %s", code, stderr.String())
 	}
-	out := stdout.String()
-	if !strings.Contains(out, "encoding/json") {
-		t.Errorf("output missing package path:\n%s", out)
+	if !strings.Contains(stdout.String(), "standard library") {
+		t.Errorf("flags before: output missing 'standard library':\n%s", stdout.String())
 	}
-	if !strings.Contains(out, "standard library") {
-		t.Errorf("output missing 'standard library':\n%s", out)
+
+	// Flags after arg.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"encoding/json", "--server=" + srv.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("flags after: exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "standard library") {
+		t.Errorf("flags after: output missing 'standard library':\n%s", stdout.String())
 	}
 }
 
