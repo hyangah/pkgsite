@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/mod/modfile"
@@ -643,11 +644,15 @@ func (g *stdlibZipModuleGetter) String() string {
 // is organized like the module cache, with a cache/download directory that has
 // paths that correspond to proxy URLs. An example of such a directory is $(go
 // env GOMODCACHE).
-//
-// TODO(rfindley): it would be easy and useful to add support for Search to
-// this getter.
 type modCacheModuleGetter struct {
 	dir string
+
+	// Lazily built search index over packages found in the cache. Built
+	// once on the first Search call; not refreshed during the server's
+	// lifetime.
+	indexOnce sync.Once
+	index     []modCacheSearchEntry
+	indexErr  error
 }
 
 // NewModCacheGetter returns a ModuleGetter that reads modules from a filesystem
@@ -811,7 +816,10 @@ func (g *modCacheModuleGetter) escapedPath(modulePath, version, suffix string) (
 func (g *modCacheModuleGetter) moduleDir(modulePath string) (string, error) {
 	ep, err := module.EscapePath(modulePath)
 	if err != nil {
-		return "", fmt.Errorf("path: %v: %w", err, derrors.InvalidArgument)
+		// Paths that can't be escaped (e.g. "std") can't appear in the
+		// module cache. Report NotFound so FetchDataSource.fetch falls
+		// through to the next getter.
+		return "", fmt.Errorf("path: %v: %w", err, derrors.NotFound)
 	}
 	return filepath.Join(g.dir, "cache", "download", filepath.FromSlash(ep), "@v"), nil
 }

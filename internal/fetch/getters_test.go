@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -329,4 +330,82 @@ func TestFSProxyGetter(t *testing.T) {
 			t.Errorf("got %v, want NotFound", err)
 		}
 	})
+	t.Run("not_in_cache", func(t *testing.T) {
+		// Paths that don't correspond to escaped module paths (e.g. "std")
+		// must be reported as NotFound so FetchDataSource falls through to
+		// the next getter rather than aborting the chain.
+		if _, err := g.Info(ctx, "std", version.Latest); !errors.Is(err, derrors.NotFound) {
+			t.Errorf("Info(std): got %v, want NotFound", err)
+		}
+		if _, err := g.Mod(ctx, "std", version.Latest); !errors.Is(err, derrors.NotFound) {
+			t.Errorf("Mod(std): got %v, want NotFound", err)
+		}
+		if _, err := g.ContentDir(ctx, "std", version.Latest); !errors.Is(err, derrors.NotFound) {
+			t.Errorf("ContentDir(std): got %v, want NotFound", err)
+		}
+	})
+}
+
+func TestModCacheGetterSearch(t *testing.T) {
+	ctx := context.Background()
+	g, err := NewModCacheGetter("testdata/modcache")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := g.Search(ctx, "pgio", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("Search(%q) returned no results", "pgio")
+	}
+	top := results[0]
+	if got, want := top.PackagePath, "github.com/jackc/pgio"; got != want {
+		t.Errorf("top result PackagePath = %q, want %q", got, want)
+	}
+	if got, want := top.ModulePath, "github.com/jackc/pgio"; got != want {
+		t.Errorf("top result ModulePath = %q, want %q", got, want)
+	}
+	if got, want := top.Version, "v1.0.0"; got != want {
+		t.Errorf("top result Version = %q, want %q", got, want)
+	}
+	if got, want := top.Name, "pgio"; got != want {
+		t.Errorf("top result Name = %q, want %q", got, want)
+	}
+	if !strings.Contains(top.Synopsis, "PostgreSQL wire protocol") {
+		t.Errorf("top result Synopsis = %q, want a non-empty synopsis", top.Synopsis)
+	}
+
+	// Queries that match nothing should return no results, not an error.
+	got, err := g.Search(ctx, "definitelynotapackage", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Search(no-match): got %d results, want 0", len(got))
+	}
+}
+
+func TestShouldSkipPackageDir(t *testing.T) {
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{"", false},
+		{"foo", false},
+		{"foo/bar", false},
+		{"internal", true},
+		{"internal/impl", true},
+		{"pkg/internal/x", true},
+		{"testdata", true},
+		{"x/testdata/y", true},
+		{"vendor", true},
+		{"x/vendor/y", true},
+		{"containsinternalbutnotasegment", false},
+	} {
+		if got := shouldSkipPackageDir(tc.dir); got != tc.want {
+			t.Errorf("shouldSkipPackageDir(%q) = %v, want %v", tc.dir, got, tc.want)
+		}
+	}
 }
