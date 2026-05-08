@@ -88,3 +88,194 @@ func TestCodeWikiURLGenerator(t *testing.T) {
 		})
 	}
 }
+
+// recordingTransport is an http.RoundTripper that records every outgoing
+// request URL and fails the test if invoked.
+type recordingTransport struct {
+	t        *testing.T
+	requests []string
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.requests = append(rt.requests, r.URL.String())
+	rt.t.Errorf("unexpected external request: %s", r.URL)
+	return nil, fmt.Errorf("unexpected request: %s", r.URL)
+}
+
+func TestExternalLinkGeneratorsSkipsPrivateModules(t *testing.T) {
+	// The log package is periodically used to log warnings on a
+	// separate goroutine, which can pollute test output.
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+	})
+
+	for _, tc := range []struct {
+		name      string
+		goprivate string
+		gonoproxy string
+	}{
+		{name: "GOPRIVATE match", goprivate: "github.com/owner/*"},
+		{name: "GONOPROXY match", gonoproxy: "github.com/owner/*"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := goPrivatePatterns
+			goPrivatePatterns = func() goPrivateConfig {
+				return goPrivateConfig{goprivate: tc.goprivate, gonoproxy: tc.gonoproxy, ok: true}
+			}
+			t.Cleanup(func() { goPrivatePatterns = old })
+
+			rt := &recordingTransport{t: t}
+			client := &http.Client{Transport: rt}
+
+			um := &internal.UnitMeta{ModuleInfo: internal.ModuleInfo{ModulePath: "github.com/owner/private-repo"}}
+			depsDev, codeWiki := externalLinkGenerators(context.Background(), client, um, false, false)
+			if got := depsDev(); got != "" {
+				t.Errorf("depsDev() = %q, want empty for private module", got)
+			}
+			if got := codeWiki(); got != "" {
+				t.Errorf("codeWiki() = %q, want empty for private module", got)
+			}
+		})
+	}
+}
+
+func TestExternalLinkGeneratorsSkipsWhenGoEnvFails(t *testing.T) {
+	// When "go env" can't be read, treat every module as private rather than
+	// leaking the lookup to external services.
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+	})
+
+	old := goPrivatePatterns
+	goPrivatePatterns = func() goPrivateConfig { return goPrivateConfig{} }
+	t.Cleanup(func() { goPrivatePatterns = old })
+
+	rt := &recordingTransport{t: t}
+	client := &http.Client{Transport: rt}
+
+	um := &internal.UnitMeta{ModuleInfo: internal.ModuleInfo{ModulePath: "github.com/public/repo"}}
+	depsDev, codeWiki := externalLinkGenerators(context.Background(), client, um, false, false)
+	if got := depsDev(); got != "" {
+		t.Errorf("depsDev() = %q, want empty when go env fails", got)
+	}
+	if got := codeWiki(); got != "" {
+		t.Errorf("codeWiki() = %q, want empty when go env fails", got)
+	}
+}
+
+func TestExternalLinkGeneratorsCallsForPublicModules(t *testing.T) {
+	// Sanity check: when no privacy env var matches, the generators should
+	// invoke the HTTP client. We intercept and return 404 to keep the test hermetic.
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+	})
+
+	mux := http.NewServeMux()
+	var depsHits, codeHits int
+	mux.HandleFunc("/_/s/go/", func(w http.ResponseWriter, r *http.Request) {
+		depsHits++
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/_/exists/", func(w http.ResponseWriter, r *http.Request) {
+		codeHits++
+		w.WriteHeader(http.StatusNotFound)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	oldCodeWikiExistsURL := codeWikiExistsURL
+	codeWikiExistsURL = server.URL + "/_/exists/"
+	t.Cleanup(func() { codeWikiExistsURL = oldCodeWikiExistsURL })
+
+	old := goPrivatePatterns
+	goPrivatePatterns = func() goPrivateConfig {
+		return goPrivateConfig{goprivate: "internal.example.com", ok: true}
+	}
+	t.Cleanup(func() { goPrivatePatterns = old })
+
+	// HTTP client whose RoundTripper rewrites deps.dev requests to the test server.
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "deps.dev" {
+			r.URL.Scheme = "http"
+			r.URL.Host = server.Listener.Addr().String()
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+
+	um := &internal.UnitMeta{ModuleInfo: internal.ModuleInfo{ModulePath: "github.com/public/repo"}}
+	depsDev, codeWiki := externalLinkGenerators(context.Background(), client, um, false, false)
+	depsDev()
+	codeWiki()
+	if depsHits == 0 {
+		t.Error("expected deps.dev to be contacted for a public module")
+	}
+	if codeHits == 0 {
+		t.Error("expected codewiki.google to be contacted for a public module")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestIsPrivateModulePath(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		goprivate  string
+		gonoproxy  string
+		modulePath string
+		want       bool
+	}{
+		{
+			name:       "no env set",
+			modulePath: "example.com/foo",
+			want:       false,
+		},
+		{
+			name:       "GOPRIVATE exact match",
+			goprivate:  "example.com/foo",
+			modulePath: "example.com/foo",
+			want:       true,
+		},
+		{
+			name:       "GOPRIVATE prefix glob",
+			goprivate:  "example.com/*",
+			modulePath: "example.com/foo",
+			want:       true,
+		},
+		{
+			name:       "GOPRIVATE submodule covered by parent prefix",
+			goprivate:  "example.com/foo",
+			modulePath: "example.com/foo/bar",
+			want:       true,
+		},
+		{
+			name:       "GOPRIVATE non-match",
+			goprivate:  "example.com/foo",
+			modulePath: "example.com/other",
+			want:       false,
+		},
+		{
+			name:       "GONOPROXY match when GOPRIVATE empty",
+			gonoproxy:  "internal.example.com",
+			modulePath: "internal.example.com/foo",
+			want:       true,
+		},
+		{
+			name:       "comma-separated list match",
+			goprivate:  "a.example.com,b.example.com",
+			modulePath: "b.example.com/pkg",
+			want:       true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPrivateModulePath(tc.modulePath, tc.goprivate, tc.gonoproxy); got != tc.want {
+				t.Errorf("isPrivateModulePath(%q, %q, %q) = %v, want %v",
+					tc.modulePath, tc.goprivate, tc.gonoproxy, got, tc.want)
+			}
+		})
+	}
+}
